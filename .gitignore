@@ -1,0 +1,57 @@
+# =========================
+# GHX Replay Toolkit ignores
+# =========================
+
+# Downloaded third-party binaries/tools
+_app/bin/
+_app/_downloads/
+
+# Replay/media workflow folders
+00_REPLAY/
+01_COMPRESS_INGEST/
+02_COMPRESS_PROCESSING/
+03_COMPRESSED/
+04_SORTED/
+05_RIFE_INGEST/
+06_RIFE_PROCESSING/
+07_RIFE_OUTPUT/
+logs/
+
+# Video/media files
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.flv
+*.ts
+*.m4v
+
+# Frame extraction / image temp files
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.webp
+
+# Archives/downloads
+*.zip
+*.7z
+*.rar
+
+# Windows junk
+Thumbs.db
+Desktop.ini
+
+# Editor junk
+.vscode/
+.idea/
+
+# PowerShell/temp/log output
+*.log
+*.tmp
+
+# Local testing/output
+test/
+temp/
+tmp/
