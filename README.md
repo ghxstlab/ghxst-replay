@@ -33,6 +33,7 @@ It is intended for short manually cut highlight clips.
 
 You first cut the exact clip you want, then place it into the RIFE ingest folder. The toolkit extracts frames, runs RIFE interpolation, and rebuilds a smooth 120 FPS output.
 
+
 ## Folder Workflow
 
 OBS should save raw recordings or replay buffer clips to:
@@ -113,13 +114,72 @@ by running:
 ```text
 C:\ReplayVault\_app\launchers\Install-GHX-Tools.bat
 ```
+## Quick Start
+
+### First Run
+
+1. Clone or download this repo to:
+
+```text
+C:\ReplayVault
+```
+
+2. Open the folder:
+
+```text
+C:\ReplayVault
+```
+
+3. Run the installer:
+
+```text
+INSTALL.bat
+```
+
+This downloads the required portable tools into `_app\bin`:
+
+- FFmpeg
+- FFprobe
+- HandBrakeCLI
+- rife-ncnn-vulkan
+
+4. After the installer finishes, run:
+
+```text
+START.bat
+```
+
+This opens the GHX Replay Toolkit menu.
+
+### Normal Use
+
+After the first install, you only need to run:
+
+```text
+START.bat
+```
+
+### Updating
+
+If installed with Git, update with:
+
+```powershell
+cd C:\ReplayVault
+git pull
+```
+
+Then run:
+
+```text
+INSTALL.bat
+```
 
 ## Usage
 
 Run the main launcher:
 
 ```text
-C:\ReplayVault\_app\launchers\GHX-Replay-Toolkit.bat
+C:\ReplayVault\START.bat
 ```
 
 From the menu you can:
@@ -212,7 +272,7 @@ git pull
 Then optionally run:
 
 ```text
-C:\ReplayVault\_app\launchers\Install-GHX-Tools.bat
+C:\ReplayVault\INSTALL.bat
 ```
 
 ## Notes
