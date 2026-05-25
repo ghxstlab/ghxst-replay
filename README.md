@@ -35,7 +35,7 @@ C:\ReplayVault
 3. Run the installer:
 
 ```text
-INSTALL.bat
+01_INSTALL_TOOLS.bat
 ```
 
 This downloads the required portable tools into `_app\bin`:
@@ -48,7 +48,7 @@ This downloads the required portable tools into `_app\bin`:
 4. After the installer finishes, run:
 
 ```text
-START.bat
+04_START_CLASSIC_MENU.bat
 ```
 
 This opens the GHX Replay Toolkit menu.
@@ -58,7 +58,7 @@ This opens the GHX Replay Toolkit menu.
 After the first install, you only need to run:
 
 ```text
-START.bat
+04_START_CLASSIC_MENU.bat
 ```
 
 ### Updating
@@ -73,7 +73,7 @@ git pull
 Then run:
 
 ```text
-INSTALL.bat
+01_INSTALL_TOOLS.bat
 ```
 
 again only if tools are missing or the installer has been updated.
@@ -247,7 +247,7 @@ C:\ReplayVault\_app\bin
 by running:
 
 ```text
-C:\ReplayVault\INSTALL.bat
+C:\ReplayVault\01_INSTALL_TOOLS.bat
 ```
 
 ## Usage
@@ -255,7 +255,7 @@ C:\ReplayVault\INSTALL.bat
 Run the main launcher:
 
 ```text
-C:\ReplayVault\START.bat
+C:\ReplayVault\04_START_CLASSIC_MENU.bat
 ```
 
 From the menu you can:
@@ -301,7 +301,7 @@ C:\ReplayVault\01_COMPRESS_INGEST\input
 3. Run:
 
 ```text
-C:\ReplayVault\START.bat
+C:\ReplayVault\04_START_CLASSIC_MENU.bat
 ```
 
 4. Choose a compression option.
@@ -333,7 +333,7 @@ C:\ReplayVault\05_RIFE_INGEST
 4. Run:
 
 ```text
-C:\ReplayVault\START.bat
+C:\ReplayVault\04_START_CLASSIC_MENU.bat
 ```
 
 5. Choose the RIFE 120 FPS option.
@@ -356,12 +356,19 @@ git pull
 Then optionally run:
 
 ```text
-INSTALL.bat
+01_INSTALL_TOOLS.bat
 ```
 
 ## Notes
 
 The repository is designed to stay lightweight.
+
+## Documentation
+
+Additional documentation is stored in:
+
+```text
+_docs
 
 The following are ignored by Git:
 

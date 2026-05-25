@@ -1,17 +1,20 @@
 <#
 Install-GHX-Tools.ps1
 
-Downloads and installs portable tool dependencies into:
+GHX Replay Toolkit dependency installer/checker.
 
-C:\ReplayVault\_app\bin
-
-Tools:
+Installs/checks:
+- Python
+- customtkinter
 - FFmpeg / FFprobe
 - HandBrakeCLI
 - rife-ncnn-vulkan
 
-Run from:
-C:\ReplayVault\_app\launchers\Install-GHX-Tools.bat
+Installs portable video tools into:
+C:\ReplayVault\_app\bin
+
+Python is installed via winget when missing.
+customtkinter is installed via python -m pip.
 #>
 
 $ErrorActionPreference = "Stop"
@@ -38,6 +41,193 @@ function Ensure-Folder {
     if (!(Test-Path $Path)) {
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
     }
+}
+
+function Write-Step {
+    param ([string]$Message)
+
+    Write-Host ""
+    Write-Host "==> $Message" -ForegroundColor Cyan
+}
+
+function Write-Ok {
+    param ([string]$Message)
+
+    Write-Host "[OK] $Message" -ForegroundColor Green
+}
+
+function Write-Warn {
+    param ([string]$Message)
+
+    Write-Host "[WARN] $Message" -ForegroundColor Yellow
+}
+
+function Write-Fail {
+    param ([string]$Message)
+
+    Write-Host "[FAIL] $Message" -ForegroundColor Red
+}
+
+function Get-CommandPath {
+    param ([string]$Command)
+
+    $Result = Get-Command $Command -ErrorAction SilentlyContinue
+
+    if ($Result) {
+        return $Result.Source
+    }
+
+    return $null
+}
+
+function Test-Winget {
+    return [bool](Get-Command winget -ErrorAction SilentlyContinue)
+}
+
+function Get-PythonCommand {
+    $Python = Get-Command python -ErrorAction SilentlyContinue
+
+    if ($Python) {
+        try {
+            $VersionOutput = & python --version 2>&1
+            if ($LASTEXITCODE -eq 0 -and $VersionOutput -match "Python") {
+                return "python"
+            }
+        }
+        catch {}
+    }
+
+    $Py = Get-Command py -ErrorAction SilentlyContinue
+
+    if ($Py) {
+        try {
+            $VersionOutput = & py -3 --version 2>&1
+            if ($LASTEXITCODE -eq 0 -and $VersionOutput -match "Python") {
+                return "py -3"
+            }
+        }
+        catch {}
+    }
+
+    return $null
+}
+
+function Invoke-Python {
+    param (
+        [string]$PythonCommand,
+        [string[]]$Arguments
+    )
+
+    if ($PythonCommand -eq "python") {
+        & python @Arguments
+        return $LASTEXITCODE
+    }
+
+    if ($PythonCommand -eq "py -3") {
+        & py -3 @Arguments
+        return $LASTEXITCODE
+    }
+
+    throw "Unsupported Python command: $PythonCommand"
+}
+
+function Install-Python {
+    Write-Step "Checking Python"
+
+    $PythonCommand = Get-PythonCommand
+
+    if ($PythonCommand) {
+        $VersionOutput = if ($PythonCommand -eq "python") { & python --version } else { & py -3 --version }
+        Write-Ok "Python found: $VersionOutput"
+        return $PythonCommand
+    }
+
+    Write-Warn "Python was not found."
+
+    if (!(Test-Winget)) {
+        Write-Fail "winget was not found. Install Python manually from python.org or install App Installer from Microsoft Store."
+        throw "winget missing and Python missing."
+    }
+
+    Write-Host ""
+    Write-Host "Python is required for the GHX UI." -ForegroundColor Yellow
+    Write-Host "The installer will now try to install Python using winget." -ForegroundColor Yellow
+    Write-Host "You may need to accept a UAC/admin prompt or installer prompt." -ForegroundColor Yellow
+    Write-Host ""
+
+    $Answer = Read-Host "Install Python now? Y/N"
+
+    if ($Answer.ToUpper() -ne "Y") {
+        throw "Python install declined by user."
+    }
+
+    $PythonPackages = @(
+        "Python.Python.3.14",
+        "Python.Python.3.13",
+        "Python.Python.3.12"
+    )
+
+    $Installed = $false
+
+    foreach ($Package in $PythonPackages) {
+        Write-Step "Trying winget install $Package"
+
+        winget install -e --id $Package --source winget --accept-package-agreements --accept-source-agreements
+
+        if ($LASTEXITCODE -eq 0) {
+            $Installed = $true
+            break
+        }
+
+        Write-Warn "Could not install $Package. Trying next option..."
+    }
+
+    if (!$Installed) {
+        throw "Python installation failed using winget."
+    }
+
+    Write-Host ""
+    Write-Warn "Python was installed. If Python is still not detected, close this window and run INSTALL.bat again."
+    Write-Warn "This is normal because PATH may only refresh in a new terminal."
+
+    $PythonCommand = Get-PythonCommand
+
+    if (!$PythonCommand) {
+        return $null
+    }
+
+    return $PythonCommand
+}
+
+function Install-CustomTkinter {
+    param ([string]$PythonCommand)
+
+    Write-Step "Checking customtkinter"
+
+    if (!$PythonCommand) {
+        Write-Warn "Python command not available in this session. Rerun installer after reopening the terminal."
+        return
+    }
+
+    Invoke-Python -PythonCommand $PythonCommand -Arguments @("-c", "import customtkinter; print('customtkinter ok')") | Out-Null
+
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "customtkinter already installed."
+        return
+    }
+
+    Write-Warn "customtkinter not found. Installing with pip..."
+
+    Invoke-Python -PythonCommand $PythonCommand -Arguments @("-m", "pip", "install", "--upgrade", "pip")
+    Invoke-Python -PythonCommand $PythonCommand -Arguments @("-m", "pip", "install", "customtkinter")
+
+    Invoke-Python -PythonCommand $PythonCommand -Arguments @("-c", "import customtkinter; print('customtkinter ok')") | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "customtkinter install failed."
+    }
+
+    Write-Ok "customtkinter installed."
 }
 
 function Download-File {
@@ -94,8 +284,10 @@ function Expand-ZipClean {
 }
 
 function Install-FFmpeg {
+    Write-Step "Checking FFmpeg"
+
     if ((Test-Path $FFmpegExe) -and (Test-Path $FFprobeExe)) {
-        Write-Host "FFmpeg already installed." -ForegroundColor Green
+        Write-Ok "FFmpeg already installed."
         return
     }
 
@@ -113,17 +305,17 @@ function Install-FFmpeg {
         throw "FFprobe install failed. Missing $FFprobeExe"
     }
 
-    Write-Host "FFmpeg installed." -ForegroundColor Green
+    Write-Ok "FFmpeg installed."
 }
 
 function Install-HandBrakeCLI {
+    Write-Step "Checking HandBrakeCLI"
+
     if (Test-Path $HandBrakeExe) {
-        Write-Host "HandBrakeCLI already installed." -ForegroundColor Green
+        Write-Ok "HandBrakeCLI already installed."
         return
     }
 
-    # Update this manually when HandBrake releases a new CLI version.
-    # Current official command-line download page showed 1.11.1 at time of writing.
     $Version = "1.11.1"
     $ZipPath = Join-Path $DownloadPath "HandBrakeCLI-$Version-win-x86_64.zip"
     $Url = "https://github.com/HandBrake/HandBrake/releases/download/$Version/HandBrakeCLI-$Version-win-x86_64.zip"
@@ -135,17 +327,17 @@ function Install-HandBrakeCLI {
         throw "HandBrakeCLI install failed. Missing $HandBrakeExe"
     }
 
-    Write-Host "HandBrakeCLI installed." -ForegroundColor Green
+    Write-Ok "HandBrakeCLI installed."
 }
 
 function Install-RIFE {
+    Write-Step "Checking rife-ncnn-vulkan"
+
     if (Test-Path $RifeExe) {
-        Write-Host "rife-ncnn-vulkan already installed." -ForegroundColor Green
+        Write-Ok "rife-ncnn-vulkan already installed."
         return
     }
 
-    # This release is commonly used and stable.
-    # You can update this later if you test a newer RIFE release.
     $Release = "20221029"
     $ZipPath = Join-Path $DownloadPath "rife-ncnn-vulkan-$Release-windows.zip"
     $Url = "https://github.com/nihui/rife-ncnn-vulkan/releases/download/$Release/rife-ncnn-vulkan-$Release-windows.zip"
@@ -157,20 +349,39 @@ function Install-RIFE {
         throw "RIFE install failed. Missing $RifeExe"
     }
 
-    Write-Host "rife-ncnn-vulkan installed." -ForegroundColor Green
+    Write-Ok "rife-ncnn-vulkan installed."
 }
 
 function Test-Tools {
-    Write-Host ""
-    Write-Host "Testing installed tools..." -ForegroundColor Cyan
+    Write-Step "Final tool check"
 
-    & $FFmpegExe -version | Select-Object -First 1
-    & $FFprobeExe -version | Select-Object -First 1
-    & $HandBrakeExe --version
-    & $RifeExe -h | Select-Object -First 5
+    if (Test-Path $FFmpegExe) {
+        & $FFmpegExe -version | Select-Object -First 1
+    }
+    else {
+        Write-Fail "Missing FFmpeg"
+    }
 
-    Write-Host ""
-    Write-Host "All tool checks completed." -ForegroundColor Green
+    if (Test-Path $FFprobeExe) {
+        & $FFprobeExe -version | Select-Object -First 1
+    }
+    else {
+        Write-Fail "Missing FFprobe"
+    }
+
+    if (Test-Path $HandBrakeExe) {
+        & $HandBrakeExe --version
+    }
+    else {
+        Write-Fail "Missing HandBrakeCLI"
+    }
+
+    if (Test-Path $RifeExe) {
+        & $RifeExe -h | Select-Object -First 5
+    }
+    else {
+        Write-Fail "Missing RIFE"
+    }
 }
 
 Ensure-Folder $BinPath
@@ -181,11 +392,16 @@ Write-Host "GHX Replay Toolkit dependency installer" -ForegroundColor Cyan
 Write-Host "App path: $AppPath" -ForegroundColor Gray
 Write-Host ""
 
+$PythonCommand = Install-Python
+Install-CustomTkinter -PythonCommand $PythonCommand
+
 Install-FFmpeg
 Install-HandBrakeCLI
 Install-RIFE
+
 Test-Tools
 
 Write-Host ""
-Write-Host "Install complete." -ForegroundColor Green
-Write-Host "You can now run GHX-Replay-Toolkit.bat"
+Write-Host "Install/check complete." -ForegroundColor Green
+Write-Host "You can now run GHX-UI.vbs or START.bat."
+Write-Host ""
