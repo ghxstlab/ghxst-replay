@@ -46,8 +46,32 @@ function Show-Header {
 function Run-Script {
     param (
         [string]$Name,
-        [string]$ScriptPath
+        [string]$ScriptPath,
+        [string[]]$ExtraArgs = @()
     )
+
+    if (!(Test-Path $ScriptPath)) {
+        Write-Host ""
+        Write-Host "Missing script: $ScriptPath" -ForegroundColor Red
+        Pause
+        return
+    }
+
+    Write-Host ""
+    Write-Host "Running: $Name" -ForegroundColor Cyan
+    Write-Host ""
+
+    $PowerShellExe = "powershell"
+
+    if (Get-Command pwsh -ErrorAction SilentlyContinue) {
+        $PowerShellExe = "pwsh"
+    }
+
+    & $PowerShellExe -ExecutionPolicy Bypass -File $ScriptPath @ExtraArgs
+
+    Write-Host ""
+    Write-Host "Finished: $Name" -ForegroundColor Green
+}
 
     if (!(Test-Path $ScriptPath)) {
         Write-Host ""
@@ -120,11 +144,14 @@ do {
         }
 
         "4" {
-            Run-Script -Name "Normal CPU Compression" -ScriptPath $NormalCPU
-            Run-Script -Name "Normal NVENC Compression" -ScriptPath $NormalNVENC
-            Run-Script -Name "Aggressive NVENC Compression" -ScriptPath $AggressiveNVENC
+             $Core = Join-Path $ScriptRoot "Replay-Condenser-Core.ps1"
+
+            Run-Script -Name "Normal CPU Compression" -ScriptPath $Core -ExtraArgs @("-Profile", "Normal-CPU", "-CompletionMode", "AllProfiles")
+            Run-Script -Name "Normal NVENC Compression" -ScriptPath $Core -ExtraArgs @("-Profile", "Normal-NVENC", "-CompletionMode", "AllProfiles")
+            Run-Script -Name "Aggressive NVENC Compression" -ScriptPath $Core -ExtraArgs @("-Profile", "Aggressive-NVENC", "-CompletionMode", "AllProfiles")
+
             Pause
-        }
+}
 
         "5" {
             Run-Script -Name "RIFE 120FPS Enhancement" -ScriptPath $RifeEnhancer

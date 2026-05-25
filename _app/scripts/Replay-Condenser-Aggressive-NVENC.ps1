@@ -1,2 +1,2 @@
 $Core = Join-Path $PSScriptRoot "Replay-Condenser-Core.ps1"
-& $Core -Profile "Aggressive-NVENC"
+& $Core -Profile "Normal-NVENC" -CompletionMode "CurrentProfile"

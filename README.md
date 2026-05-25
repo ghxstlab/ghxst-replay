@@ -11,109 +11,11 @@ It is designed for people who record gameplay with OBS Replay Buffer and want an
 - NVIDIA NVENC H.265 compression
 - Aggressive NVENC compression
 - RIFE 120 FPS enhancement
+- Queue-based compression workflow
 - Clean ingest, processing, output, and sorting folders
 - Simple PowerShell menu launcher
 - Self-contained app layout using `_app`
 
-## Compression Profiles
-
-The compression workflow uses HandBrakeCLI.
-
-| Profile | Description |
-|---|---|
-| Normal CPU | Best quality/size ratio, slower, uses CPU x265 |
-| Normal NVENC | Fast H.265 compression using NVIDIA NVENC |
-| Aggressive NVENC | Smaller files, more visible quality loss possible |
-
-## RIFE 120 FPS Enhancement
-
-The RIFE workflow is separate from normal compression.
-
-It is intended for short manually cut highlight clips.
-
-You first cut the exact clip you want, then place it into the RIFE ingest folder. The toolkit extracts frames, runs RIFE interpolation, and rebuilds a smooth 120 FPS output.
-
-
-## Folder Workflow
-
-OBS should save raw recordings or replay buffer clips to:
-
-```text
-C:\ReplayVault\00_REPLAY
-```
-
-For normal compression, move clips into:
-
-```text
-C:\ReplayVault\01_COMPRESS_INGEST
-```
-
-Compressed outputs go to:
-
-```text
-C:\ReplayVault\03_COMPRESSED
-```
-
-For RIFE 120 FPS enhancement, manually cut a short clip first, then move it into:
-
-```text
-C:\ReplayVault\05_RIFE_INGEST
-```
-
-RIFE outputs go to:
-
-```text
-C:\ReplayVault\07_RIFE_OUTPUT
-```
-
-## App Layout
-
-```text
-C:\ReplayVault\
-├── _app
-│   ├── bin
-│   │   ├── ffmpeg
-│   │   ├── HandBrakeCLI
-│   │   └── rife-ncnn-vulkan
-│   ├── scripts
-│   └── launchers
-│
-├── 00_REPLAY
-├── 01_COMPRESS_INGEST
-├── 02_COMPRESS_PROCESSING
-├── 03_COMPRESSED
-├── 04_SORTED
-├── 05_RIFE_INGEST
-├── 06_RIFE_PROCESSING
-├── 07_RIFE_OUTPUT
-└── logs
-```
-
-## Requirements
-
-- Windows 10 or Windows 11
-- PowerShell 7+
-- NVIDIA GPU recommended for NVENC and RIFE
-- OBS for replay recording
-- Git, if installing through GitHub
-
-The toolkit uses the following third-party tools:
-
-- HandBrakeCLI
-- FFmpeg / FFprobe
-- rife-ncnn-vulkan
-
-These tools are not committed to the Git repository. They are downloaded locally into:
-
-```text
-C:\ReplayVault\_app\bin
-```
-
-by running:
-
-```text
-C:\ReplayVault\_app\launchers\Install-GHX-Tools.bat
-```
 ## Quick Start
 
 ### First Run
@@ -174,6 +76,180 @@ Then run:
 INSTALL.bat
 ```
 
+again only if tools are missing or the installer has been updated.
+
+## Compression Profiles
+
+The compression workflow uses HandBrakeCLI.
+
+| Profile | Description |
+|---|---|
+| Normal CPU | Best quality/size ratio, slower, uses CPU x265 |
+| Normal NVENC | Fast H.265 compression using NVIDIA NVENC |
+| Aggressive NVENC | Smaller files, more visible quality loss possible |
+
+## Compression Queue Workflow
+
+Compression now uses a queue-based folder system:
+
+```text
+C:\ReplayVault\01_COMPRESS_INGEST\
+├── input
+├── inprogress
+└── complete
+```
+
+### input
+
+Put clips here when you want to compress them:
+
+```text
+C:\ReplayVault\01_COMPRESS_INGEST\input
+```
+
+### inprogress
+
+The toolkit moves the current clip into an in-progress folder while it is being processed:
+
+```text
+C:\ReplayVault\01_COMPRESS_INGEST\inprogress
+```
+
+If the script is cancelled mid-way, the next run will recover stale in-progress files back into the input queue.
+
+### complete
+
+After a successful compression run, source clips are moved to:
+
+```text
+C:\ReplayVault\01_COMPRESS_INGEST\complete
+```
+
+This makes it easier to see what has already been processed and to manually delete or archive originals later.
+
+## Completion Modes
+
+The compression core supports two completion modes.
+
+### CurrentProfile
+
+Used when running a single compression profile.
+
+After the selected profile succeeds, the source clip moves to:
+
+```text
+01_COMPRESS_INGEST\complete\<Profile>\YYYY-MM
+```
+
+### AllProfiles
+
+Used when running all compression profiles for side-by-side comparison.
+
+The source clip only moves to complete once all required profile outputs exist:
+
+- Normal CPU
+- Normal NVENC
+- Aggressive NVENC
+
+Completed originals move to:
+
+```text
+01_COMPRESS_INGEST\complete\AllProfiles\YYYY-MM
+```
+
+## RIFE 120 FPS Enhancement
+
+The RIFE workflow is separate from normal compression.
+
+It is intended for short manually cut highlight clips.
+
+You first cut the exact clip you want, then place it into the RIFE ingest folder. The toolkit extracts frames, runs RIFE interpolation, and rebuilds a smooth 120 FPS output.
+
+## Folder Workflow
+
+OBS should save raw recordings or replay buffer clips to:
+
+```text
+C:\ReplayVault\00_REPLAY
+```
+
+For normal compression, move clips into:
+
+```text
+C:\ReplayVault\01_COMPRESS_INGEST\input
+```
+
+Compressed outputs go to:
+
+```text
+C:\ReplayVault\03_COMPRESSED
+```
+
+For RIFE 120 FPS enhancement, manually cut a short clip first, then move it into:
+
+```text
+C:\ReplayVault\05_RIFE_INGEST
+```
+
+RIFE outputs go to:
+
+```text
+C:\ReplayVault\07_RIFE_OUTPUT
+```
+
+## App Layout
+
+```text
+C:\ReplayVault\
+├── _app
+│   ├── bin
+│   │   ├── ffmpeg
+│   │   ├── HandBrakeCLI
+│   │   └── rife-ncnn-vulkan
+│   ├── scripts
+│   └── launchers
+│
+├── 00_REPLAY
+├── 01_COMPRESS_INGEST
+│   ├── input
+│   ├── inprogress
+│   └── complete
+├── 02_COMPRESS_PROCESSING
+├── 03_COMPRESSED
+├── 04_SORTED
+├── 05_RIFE_INGEST
+├── 06_RIFE_PROCESSING
+├── 07_RIFE_OUTPUT
+└── logs
+```
+
+## Requirements
+
+- Windows 10 or Windows 11
+- PowerShell 7+ recommended
+- Windows PowerShell fallback supported
+- NVIDIA GPU recommended for NVENC and RIFE
+- OBS for replay recording
+- Git, if installing through GitHub
+
+The toolkit uses the following third-party tools:
+
+- HandBrakeCLI
+- FFmpeg / FFprobe
+- rife-ncnn-vulkan
+
+These tools are not committed to the Git repository. They are downloaded locally into:
+
+```text
+C:\ReplayVault\_app\bin
+```
+
+by running:
+
+```text
+C:\ReplayVault\INSTALL.bat
+```
+
 ## Usage
 
 Run the main launcher:
@@ -204,7 +280,7 @@ This keeps OBS separate from the processing workflows.
 
 From there:
 
-- Move clips to `01_COMPRESS_INGEST` for compression.
+- Move clips to `01_COMPRESS_INGEST\input` for compression.
 - Cut short clips and move them to `05_RIFE_INGEST` for RIFE enhancement.
 
 ## Compression Workflow
@@ -219,13 +295,13 @@ C:\ReplayVault\00_REPLAY
 to:
 
 ```text
-C:\ReplayVault\01_COMPRESS_INGEST
+C:\ReplayVault\01_COMPRESS_INGEST\input
 ```
 
 3. Run:
 
 ```text
-C:\ReplayVault\_app\launchers\GHX-Replay-Toolkit.bat
+C:\ReplayVault\START.bat
 ```
 
 4. Choose a compression option.
@@ -235,6 +311,14 @@ Outputs will appear in:
 ```text
 C:\ReplayVault\03_COMPRESSED
 ```
+
+Source clips will move to:
+
+```text
+C:\ReplayVault\01_COMPRESS_INGEST\complete
+```
+
+after successful processing.
 
 ## RIFE Workflow
 
@@ -249,7 +333,7 @@ C:\ReplayVault\05_RIFE_INGEST
 4. Run:
 
 ```text
-C:\ReplayVault\_app\launchers\GHX-Replay-Toolkit.bat
+C:\ReplayVault\START.bat
 ```
 
 5. Choose the RIFE 120 FPS option.
@@ -272,7 +356,7 @@ git pull
 Then optionally run:
 
 ```text
-C:\ReplayVault\INSTALL.bat
+INSTALL.bat
 ```
 
 ## Notes

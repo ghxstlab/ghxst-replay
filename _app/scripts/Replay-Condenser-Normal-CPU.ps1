@@ -1,2 +1,2 @@
 $Core = Join-Path $PSScriptRoot "Replay-Condenser-Core.ps1"
-& $Core -Profile "Normal-CPU"
+& $Core -Profile "Normal-CPU" -CompletionMode "CurrentProfile"
