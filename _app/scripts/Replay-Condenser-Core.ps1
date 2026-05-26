@@ -1,32 +1,27 @@
 <#
 GHX Replay Condenser Core
 
+Source-safe compression queue.
+
 Input queue:
 C:\ReplayVault\01_COMPRESS_INGEST\input
 
-In-progress queue:
-C:\ReplayVault\01_COMPRESS_INGEST\inprogress\<Profile>
-
-Completed originals:
+Completed source archive:
 C:\ReplayVault\01_COMPRESS_INGEST\complete\<Profile>\YYYY-MM
 or
 C:\ReplayVault\01_COMPRESS_INGEST\complete\AllProfiles\YYYY-MM
 
+Temporary processing:
+C:\ReplayVault\02_COMPRESS_PROCESSING
+
 Output:
 C:\ReplayVault\03_COMPRESSED\YYYY-MM
 
-Profiles:
-- Normal-CPU
-- Normal-NVENC
-- Aggressive-NVENC
-
-Completion modes:
-- CurrentProfile:
-  Move source clip to complete after the selected profile succeeds.
-
-- AllProfiles:
-  Used for side-by-side testing. Source clip is only moved to complete
-  once all required compression profile outputs exist.
+Important:
+- Original source files stay in input until a successful output exists.
+- During encode, a temporary copy is created in 02_COMPRESS_PROCESSING.
+- If encode fails or is cancelled, the original remains untouched in input.
+- On success, the original is moved to complete/archive.
 #>
 
 param(
@@ -52,17 +47,12 @@ $HandBrakeCLI = Join-Path $AppPath "bin\HandBrakeCLI\HandBrakeCLI.exe"
 # Global settings
 # =========================
 
-# Recommended: keep this false.
-# Originals will move to complete instead of being deleted.
-$DeleteOriginalAfterSuccess = $false
-
 $MinimumFileAgeSeconds = 45
 $Extensions = @("*.mp4", "*.mkv", "*.mov")
 
 $TargetWidth  = 2560
 $TargetHeight = 1440
 
-# Used only when CompletionMode = AllProfiles
 $RequiredProfilesForAllComplete = @(
     "Normal-CPU",
     "Normal-NVENC",
@@ -112,20 +102,22 @@ switch ($Profile) {
 # Folder paths
 # =========================
 
-$ReplayPath         = Join-Path $BasePath "00_REPLAY"
+$ReplayPath       = Join-Path $BasePath "00_REPLAY"
 
-$CompressRootPath   = Join-Path $BasePath "01_COMPRESS_INGEST"
-$IngestPath         = Join-Path $CompressRootPath "input"
-$InProgressRootPath = Join-Path $CompressRootPath "inprogress"
-$InProgressPath     = Join-Path $InProgressRootPath $OutputProfileFolder
-$CompleteRootPath   = Join-Path $CompressRootPath "complete"
+$CompressRootPath = Join-Path $BasePath "01_COMPRESS_INGEST"
+$IngestPath       = Join-Path $CompressRootPath "input"
+$CompleteRootPath = Join-Path $CompressRootPath "complete"
 
-$ProcessingPath     = Join-Path $BasePath "02_COMPRESS_PROCESSING"
-$CompressedPath     = Join-Path $BasePath "03_COMPRESSED"
-$SortedPath         = Join-Path $BasePath "04_SORTED"
+# Legacy folder. Not used anymore, but recovered if it contains old moved originals.
+$LegacyInProgressPath = Join-Path $CompressRootPath "inprogress"
 
-$LogPath            = Join-Path $BasePath "logs"
-$LogFile            = Join-Path $LogPath "replay-condenser.log"
+$ProcessingPath   = Join-Path $BasePath "02_COMPRESS_PROCESSING"
+$CompressedPath   = Join-Path $BasePath "03_COMPRESSED"
+$SortedPath       = Join-Path $BasePath "04_SORTED"
+
+$LogPath          = Join-Path $BasePath "logs"
+$LogFile          = Join-Path $LogPath "replay-condenser.log"
+$ProgressFile     = Join-Path $LogPath "compression-progress.txt"
 
 # =========================
 # Helper functions
@@ -147,6 +139,50 @@ function Write-Log {
     $Line | Tee-Object -FilePath $LogFile -Append
 }
 
+function Update-BatchProgress {
+    param (
+        [string]$Status,
+        [string]$ProfileLabel,
+        [int]$CurrentIndex,
+        [int]$TotalPending,
+        [string]$FileName,
+        [string]$OutputPath = ""
+    )
+
+    if ($TotalPending -le 0) {
+        $Percent = 100
+    }
+    else {
+        $Percent = [math]::Round(($CurrentIndex / $TotalPending) * 100, 1)
+    }
+
+    try {
+        $Host.UI.RawUI.WindowTitle = "GHX Replay Toolkit - $ProfileLabel - $CurrentIndex/$TotalPending - $Percent%"
+    }
+    catch {}
+
+    Write-Progress `
+        -Activity "GHX Replay Condenser - $ProfileLabel" `
+        -Status "$Status [$CurrentIndex/$TotalPending] $FileName" `
+        -PercentComplete $Percent
+
+    $ProgressText = @"
+GHX Replay Toolkit - Compression Progress
+Updated: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+
+Profile: $ProfileLabel
+Status:  $Status
+
+Current: $CurrentIndex / $TotalPending
+Percent: $Percent%
+
+File:    $FileName
+Output:  $OutputPath
+"@
+
+    $ProgressText | Set-Content $ProgressFile
+}
+
 function Get-SafeName {
     param ([string]$Name)
 
@@ -160,8 +196,6 @@ function Get-ClipDateInfo {
 
     $BaseName = [System.IO.Path]::GetFileNameWithoutExtension($File.Name)
 
-    # OBS replay naming example:
-    # Replay 2026-05-16 22-53-32
     if ($BaseName -match "Replay (?<date>\d{4}-\d{2}-\d{2}) (?<time>\d{2}-\d{2}-\d{2})") {
         $DatePart  = $Matches["date"]
         $TimePart  = $Matches["time"]
@@ -247,12 +281,6 @@ function Move-SourceToComplete {
         return
     }
 
-    if ($DeleteOriginalAfterSuccess -eq $true) {
-        Remove-Item -Path $SourcePath -Force
-        Write-Log "Original deleted after successful encode: $SourcePath"
-        return
-    }
-
     if ($CompletionMode -eq "AllProfiles") {
         $CompleteProfileFolder = "AllProfiles"
     }
@@ -267,45 +295,34 @@ function Move-SourceToComplete {
     $CompleteFile = Get-UniquePath -Path $CompleteFile
 
     Move-Item -Path $SourcePath -Destination $CompleteFile -Force
-    Write-Log "Original moved to complete: $CompleteFile"
+    Write-Log "Original source moved to complete archive: $CompleteFile"
 }
 
-function Move-SourceBackToInput {
-    param (
-        [string]$SourcePath,
-        [System.IO.FileInfo]$OriginalFile
-    )
-
-    if (!(Test-Path $SourcePath)) {
+function Recover-LegacyInProgressFiles {
+    if (!(Test-Path $LegacyInProgressPath)) {
         return
     }
 
-    $ReturnPath = Join-Path $IngestPath $OriginalFile.Name
-    $ReturnPath = Get-UniquePath -Path $ReturnPath
-
-    Move-Item -Path $SourcePath -Destination $ReturnPath -Force
-    Write-Log "Returned source file to input: $ReturnPath"
-}
-
-function Recover-InProgressFiles {
-    $InProgressFiles = foreach ($Ext in $Extensions) {
-        Get-ChildItem -Path $InProgressPath -Filter $Ext -File -ErrorAction SilentlyContinue
+    $LegacyFiles = foreach ($Ext in $Extensions) {
+        Get-ChildItem -Path $LegacyInProgressPath -Filter $Ext -Recurse -File -ErrorAction SilentlyContinue
     }
 
-    if (!$InProgressFiles -or $InProgressFiles.Count -eq 0) {
+    $LegacyFiles = @($LegacyFiles)
+
+    if ($LegacyFiles.Count -eq 0) {
         return
     }
 
     Write-Host ""
-    Write-Host "Recovering stale in-progress files for $ProfileLabel..." -ForegroundColor Yellow
-    Write-Log "Recovering $($InProgressFiles.Count) stale in-progress file(s) for $ProfileLabel."
+    Write-Host "Recovering $($LegacyFiles.Count) legacy in-progress source file(s) back to input..." -ForegroundColor Yellow
+    Write-Log "Recovering $($LegacyFiles.Count) legacy in-progress source file(s) back to input."
 
-    foreach ($File in $InProgressFiles) {
+    foreach ($File in $LegacyFiles) {
         $ReturnPath = Join-Path $IngestPath $File.Name
         $ReturnPath = Get-UniquePath -Path $ReturnPath
 
         Move-Item -Path $File.FullName -Destination $ReturnPath -Force
-        Write-Log "Recovered in-progress file back to input: $ReturnPath"
+        Write-Log "Recovered legacy in-progress file back to input: $ReturnPath"
     }
 }
 
@@ -317,6 +334,24 @@ function Get-QueueFiles {
     return @($QueueFiles)
 }
 
+function Remove-TempInput {
+    param ([string]$TempInput)
+
+    if ($TempInput -and (Test-Path $TempInput)) {
+        Remove-Item -Path $TempInput -Force
+        Write-Log "Removed temp processing copy: $TempInput"
+    }
+}
+
+function Remove-IncompleteOutput {
+    param ([string]$OutputFile)
+
+    if ($OutputFile -and (Test-Path $OutputFile)) {
+        Remove-Item -Path $OutputFile -Force
+        Write-Log "Removed incomplete output file: $OutputFile"
+    }
+}
+
 # =========================
 # Startup checks
 # =========================
@@ -325,8 +360,6 @@ $RequiredFolders = @(
     $ReplayPath,
     $CompressRootPath,
     $IngestPath,
-    $InProgressRootPath,
-    $InProgressPath,
     $CompleteRootPath,
     $ProcessingPath,
     $CompressedPath,
@@ -347,8 +380,7 @@ if (!(Test-Path $HandBrakeCLI)) {
     exit 1
 }
 
-# Recover interrupted files from previous cancelled runs
-Recover-InProgressFiles
+Recover-LegacyInProgressFiles
 
 # =========================
 # Find clips
@@ -376,23 +408,26 @@ $WorkItems = foreach ($File in $Files) {
     }
 }
 
-# Move already-complete source files out of input where appropriate
+# Move already-complete source files only when safe.
 foreach ($Item in @($WorkItems | Where-Object { $_.IsComplete -eq $true })) {
     if ($CompletionMode -eq "CurrentProfile") {
-        Write-Host "Already complete, moving source to complete: $($Item.File.Name)" -ForegroundColor DarkGray
-        Write-Log "Already complete for $OutputProfileFolder. Moving source to complete: $($Item.File.Name)"
+        Write-Host "Already complete for $OutputProfileFolder, archiving source: $($Item.File.Name)" -ForegroundColor DarkGray
+        Write-Log "Already complete for $OutputProfileFolder. Moving source to complete archive: $($Item.File.Name)"
         Move-SourceToComplete -SourcePath $Item.File.FullName -OriginalFile $Item.File -ClipInfo $Item.ClipInfo
     }
     elseif ($CompletionMode -eq "AllProfiles") {
         if (Test-AllRequiredProfileOutputsExist -File $Item.File) {
-            Write-Host "Complete for all profiles, moving source to complete: $($Item.File.Name)" -ForegroundColor DarkGray
-            Write-Log "Complete for all profiles. Moving source to complete: $($Item.File.Name)"
+            Write-Host "Complete for all profiles, archiving source: $($Item.File.Name)" -ForegroundColor DarkGray
+            Write-Log "Complete for all profiles. Moving source to complete archive: $($Item.File.Name)"
             Move-SourceToComplete -SourcePath $Item.File.FullName -OriginalFile $Item.File -ClipInfo $Item.ClipInfo
+        }
+        else {
+            Write-Log "Current profile already exists, but other profiles are missing. Keeping source in input: $($Item.File.Name)"
         }
     }
 }
 
-# Refresh queue after moving complete files
+# Refresh queue after archiving already-complete files.
 $Files = Get-QueueFiles
 
 $WorkItems = foreach ($File in $Files) {
@@ -439,7 +474,6 @@ foreach ($Item in $PendingItems) {
     $File = $Item.File
     $ClipInfo = $Item.ClipInfo
 
-    $InProgressFile = $null
     $TempInput = $null
     $OutputFile = $null
 
@@ -457,21 +491,24 @@ foreach ($Item in $PendingItems) {
 
         $OutputFile = $Item.OutputPath
 
-        $InProgressFile = Join-Path $InProgressPath $File.Name
-        $InProgressFile = Get-UniquePath -Path $InProgressFile
-
         $TempName = "$([System.IO.Path]::GetFileNameWithoutExtension($File.Name))_$Profile`_$([guid]::NewGuid().ToString())$($File.Extension)"
         $TempInput = Join-Path $ProcessingPath $TempName
 
         Write-Host ""
         Write-Host "[$CurrentIndex/$TotalPending] Encoding: $($File.Name)" -ForegroundColor Cyan
+        Write-Host "Source remains safe in input until successful completion." -ForegroundColor DarkGray
         Write-Host "Output: $OutputFile" -ForegroundColor DarkGray
 
-        Write-Log "Moving to inprogress: $($File.FullName) -> $InProgressFile"
-        Move-Item -Path $File.FullName -Destination $InProgressFile -Force
+        Update-BatchProgress `
+            -Status "Encoding" `
+            -ProfileLabel $ProfileLabel `
+            -CurrentIndex $CurrentIndex `
+            -TotalPending $TotalPending `
+            -FileName $File.Name `
+            -OutputPath $OutputFile
 
-        Write-Log "Copying inprogress file to processing: $InProgressFile -> $TempInput"
-        Copy-Item -Path $InProgressFile -Destination $TempInput -Force
+        Write-Log "Copying source file to temporary processing copy: $($File.FullName) -> $TempInput"
+        Copy-Item -Path $File.FullName -Destination $TempInput -Force
 
         Write-Log "Encoding started: $TempInput"
         Write-Log "Output target: $OutputFile"
@@ -508,7 +545,7 @@ foreach ($Item in $PendingItems) {
         }
 
         if ($LASTEXITCODE -eq 0 -and (Test-Path $OutputFile)) {
-            $SourceSizeMB = [math]::Round((Get-Item $InProgressFile).Length / 1MB, 2)
+            $SourceSizeMB = [math]::Round((Get-Item $File.FullName).Length / 1MB, 2)
             $OutputSizeMB = [math]::Round((Get-Item $OutputFile).Length / 1MB, 2)
 
             if ($SourceSizeMB -gt 0) {
@@ -521,61 +558,52 @@ foreach ($Item in $PendingItems) {
             Write-Log "Encode complete. Source=${SourceSizeMB}MB Output=${OutputSizeMB}MB Saved=${SavingsPercent}%"
             Write-Host "Complete. Source=${SourceSizeMB}MB Output=${OutputSizeMB}MB Saved=${SavingsPercent}%" -ForegroundColor Green
 
-            if (Test-Path $TempInput) {
-                Remove-Item -Path $TempInput -Force
-                Write-Log "Removed temp processing copy."
-            }
+            Update-BatchProgress `
+                -Status "Completed" `
+                -ProfileLabel $ProfileLabel `
+                -CurrentIndex $CurrentIndex `
+                -TotalPending $TotalPending `
+                -FileName $File.Name `
+                -OutputPath $OutputFile
+
+            Remove-TempInput -TempInput $TempInput
 
             if ($CompletionMode -eq "AllProfiles") {
-                if (Test-AllRequiredProfileOutputsExist -File (Get-Item $InProgressFile)) {
-                    Move-SourceToComplete -SourcePath $InProgressFile -OriginalFile (Get-Item $InProgressFile) -ClipInfo $ClipInfo
+                if (Test-AllRequiredProfileOutputsExist -File $File) {
+                    Move-SourceToComplete -SourcePath $File.FullName -OriginalFile $File -ClipInfo $ClipInfo
                 }
                 else {
-                    Move-SourceBackToInput -SourcePath $InProgressFile -OriginalFile (Get-Item $InProgressFile)
-                    Write-Log "AllProfiles mode: not all outputs exist yet, source returned to input."
+                    Write-Log "AllProfiles mode: not all outputs exist yet. Source remains in input: $($File.FullName)"
                 }
             }
             else {
-                Move-SourceToComplete -SourcePath $InProgressFile -OriginalFile (Get-Item $InProgressFile) -ClipInfo $ClipInfo
+                Move-SourceToComplete -SourcePath $File.FullName -OriginalFile $File -ClipInfo $ClipInfo
             }
         }
         else {
-            Write-Log "ERROR: Encode failed for $TempInput"
+            Write-Log "ERROR: Encode failed for $TempInput. Source remains untouched in input."
 
-            if ($OutputFile -and (Test-Path $OutputFile)) {
-                Remove-Item $OutputFile -Force
-                Write-Log "Removed incomplete output file: $OutputFile"
-            }
-
-            if ($TempInput -and (Test-Path $TempInput)) {
-                Remove-Item $TempInput -Force
-                Write-Log "Removed temp processing copy after failed encode."
-            }
-
-            if ($InProgressFile -and (Test-Path $InProgressFile)) {
-                Move-SourceBackToInput -SourcePath $InProgressFile -OriginalFile (Get-Item $InProgressFile)
-            }
+            Remove-IncompleteOutput -OutputFile $OutputFile
+            Remove-TempInput -TempInput $TempInput
         }
     }
     catch {
         Write-Log "ERROR processing $($File.Name): $($_.Exception.Message)"
         Write-Host "ERROR processing $($File.Name): $($_.Exception.Message)" -ForegroundColor Red
 
-        if ($OutputFile -and (Test-Path $OutputFile)) {
-            Remove-Item $OutputFile -Force
-            Write-Log "Removed incomplete output file after exception: $OutputFile"
-        }
+        Remove-IncompleteOutput -OutputFile $OutputFile
+        Remove-TempInput -TempInput $TempInput
 
-        if ($TempInput -and (Test-Path $TempInput)) {
-            Remove-Item $TempInput -Force
-            Write-Log "Removed temp processing copy after exception."
-        }
-
-        if ($InProgressFile -and (Test-Path $InProgressFile)) {
-            Move-SourceBackToInput -SourcePath $InProgressFile -OriginalFile (Get-Item $InProgressFile)
-        }
+        Write-Log "Source remains untouched in input after exception: $($File.FullName)"
     }
 }
+
+Write-Progress -Activity "GHX Replay Condenser - $ProfileLabel" -Completed
+
+try {
+    $Host.UI.RawUI.WindowTitle = "GHX Replay Toolkit"
+}
+catch {}
 
 Write-Log "Replay condenser run complete."
 Write-Host ""
@@ -583,7 +611,7 @@ Write-Host "Replay condenser complete." -ForegroundColor Green
 Write-Host "Profile: $ProfileLabel"
 Write-Host "Completion mode: $CompletionMode"
 Write-Host "Input queue: $IngestPath"
-Write-Host "In-progress queue: $InProgressPath"
-Write-Host "Completed originals: $CompleteRootPath"
+Write-Host "Source archive: $CompleteRootPath"
+Write-Host "Temp processing: $ProcessingPath"
 Write-Host "Compressed output: $CompressedPath"
-Write-Host "Originals deleted after success: $DeleteOriginalAfterSuccess"
+Write-Host "Original source files are only moved after successful completion."

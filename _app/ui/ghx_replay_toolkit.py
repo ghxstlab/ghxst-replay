@@ -1,24 +1,24 @@
 r"""
-GHX Replay Toolkit UI v3
+GHX Replay Toolkit UI v4
 
 Polished CustomTkinter frontend for the existing GHX Replay Toolkit PowerShell backend.
 
 Save as:
 C:\ReplayVault\_app\ui\ghx_replay_toolkit.py
 
-Run with:
-python C:\ReplayVault\_app\ui\ghx_replay_toolkit.py
-
-This UI keeps the PowerShell backend intact and calls:
-- _app\scripts\Replay-Condenser-Core.ps1
-- _app\scripts\Replay-Enhance-RIFE-120.ps1
-- _app\scripts\Install-GHX-Tools.ps1
+This version:
+- Removes the confusing Active Job dashboard card.
+- Keeps source files untouched until successful completion.
+- Hides backend PowerShell windows.
+- Adds Stop support using taskkill process-tree termination on Windows.
+- Adds RIFE frame-count progress monitoring by watching 06_RIFE_PROCESSING.
 """
 
 from __future__ import annotations
 
 import os
 import queue
+import re
 import subprocess
 import threading
 from pathlib import Path
@@ -33,6 +33,7 @@ except ImportError as exc:
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
 class GHXReplayToolkit(ctk.CTk):
@@ -55,10 +56,11 @@ class GHXReplayToolkit(ctk.CTk):
         self.paths = {
             "raw": self.base_path / "00_REPLAY",
             "compress_input": self.base_path / "01_COMPRESS_INGEST" / "input",
-            "compress_inprogress": self.base_path / "01_COMPRESS_INGEST" / "inprogress",
             "compress_archive": self.base_path / "01_COMPRESS_INGEST" / "complete",
             "compressed": self.base_path / "03_COMPRESSED",
+            "compress_processing": self.base_path / "02_COMPRESS_PROCESSING",
             "rife_input": self.base_path / "05_RIFE_INGEST",
+            "rife_processing": self.base_path / "06_RIFE_PROCESSING",
             "rife_output": self.base_path / "07_RIFE_OUTPUT",
             "logs": self.base_path / "logs",
         }
@@ -71,6 +73,7 @@ class GHXReplayToolkit(ctk.CTk):
         self.current_process: subprocess.Popen[str] | None = None
         self.is_running = False
         self.stop_requested = False
+        self.current_job_type = "idle"
 
         self.count_labels: dict[str, ctk.CTkLabel] = {}
         self.action_buttons: list[ctk.CTkButton] = []
@@ -80,6 +83,7 @@ class GHXReplayToolkit(ctk.CTk):
         self.refresh_counts(log_message=False)
         self.after(250, self._drain_output_queue)
         self.after(2000, self._auto_refresh_counts)
+        self.after(1000, self._auto_update_rife_progress)
 
     # -------------------------
     # UI construction
@@ -97,7 +101,7 @@ class GHXReplayToolkit(ctk.CTk):
         self.main = ctk.CTkFrame(self, corner_radius=0, fg_color="#0a0f17")
         self.main.grid(row=0, column=1, sticky="nsew")
         self.main.grid_columnconfigure(0, weight=1)
-        self.main.grid_rowconfigure(4, weight=1)
+        self.main.grid_rowconfigure(5, weight=1)
 
         self._build_sidebar()
         self._build_main()
@@ -162,10 +166,11 @@ class GHXReplayToolkit(ctk.CTk):
         folder_buttons = [
             ("00  RAW OBS", "raw"),
             ("01  Queue Input", "compress_input"),
-            ("01  Active Job", "compress_inprogress"),
             ("01  Source Archive", "compress_archive"),
+            ("02  Compress Processing", "compress_processing"),
             ("03  Compressed Output", "compressed"),
             ("05  RIFE Input", "rife_input"),
+            ("06  RIFE Processing", "rife_processing"),
             ("07  RIFE Output", "rife_output"),
             ("Logs", "logs"),
         ]
@@ -182,13 +187,7 @@ class GHXReplayToolkit(ctk.CTk):
             justify="left",
         ).pack(padx=24, pady=(22, 0), anchor="w")
 
-    def _sidebar_button(
-        self,
-        text: str,
-        command: Callable[[], None],
-        color: str,
-        hover: str,
-    ) -> None:
+    def _sidebar_button(self, text: str, command: Callable[[], None], color: str, hover: str) -> None:
         ctk.CTkButton(
             self.sidebar,
             text=text,
@@ -235,6 +234,7 @@ class GHXReplayToolkit(ctk.CTk):
         self._build_count_cards()
         self._build_workflow_help()
         self._build_actions()
+        self._build_progress_panel()
         self._build_log_panel()
 
     def _build_count_cards(self) -> None:
@@ -244,10 +244,10 @@ class GHXReplayToolkit(ctk.CTk):
             cards.grid_columnconfigure(i, weight=1)
 
         self._add_count_card(cards, 0, "Queue Input", "compress_input", "#00e5ff", "clips waiting to compress")
-        self._add_count_card(cards, 1, "Active Job", "compress_inprogress", "#ffd166", "usually 0 or 1")
-        self._add_count_card(cards, 2, "Source Archive", "compress_archive", "#44ff99", "originals already processed")
-        self._add_count_card(cards, 3, "Compressed Out", "compressed", "#8ab4ff", "finished compressed clips")
-        self._add_count_card(cards, 4, "RIFE Input", "rife_input", "#ff66d8", "trimmed clips for 120 FPS")
+        self._add_count_card(cards, 1, "Source Archive", "compress_archive", "#44ff99", "originals already processed")
+        self._add_count_card(cards, 2, "Compressed Out", "compressed", "#8ab4ff", "finished compressed clips")
+        self._add_count_card(cards, 3, "RIFE Input", "rife_input", "#ff66d8", "trimmed clips for 120 FPS")
+        self._add_count_card(cards, 4, "RIFE Output", "rife_output", "#b78cff", "enhanced 120 FPS clips")
 
     def _add_count_card(self, parent: ctk.CTkFrame, column: int, title: str, key: str, color: str, hint: str) -> None:
         card = ctk.CTkFrame(parent, fg_color="#101927", corner_radius=18)
@@ -277,17 +277,17 @@ class GHXReplayToolkit(ctk.CTk):
         self._info_panel(
             help_frame,
             0,
-            "Compression Flow",
-            "00_REPLAY → 01_COMPRESS_INGEST\\input → 03_COMPRESSED",
-            "Queue Input goes down as files are processed. Compressed Out goes up as outputs are created. Source Archive stores originals that are done so you can delete or keep them later.",
+            "Source-Safe Compression Flow",
+            "input source stays untouched → temp copy encodes → output created → source archived",
+            "Queue Input only moves to Source Archive after a successful output exists. If you stop/cancel a job, the original clip stays safe in the input queue.",
             "#00e5ff",
         )
         self._info_panel(
             help_frame,
             1,
             "RIFE Enhancement Flow",
-            "Cut short clip → 05_RIFE_INGEST → 07_RIFE_OUTPUT",
-            "Use this only for showcase clips. RIFE creates smoother 120 FPS output, but it is heavier and best for trimmed highlights rather than full replay dumps.",
+            "Cut short clip → 05_RIFE_INGEST → 06_RIFE_PROCESSING → 07_RIFE_OUTPUT",
+            "RIFE progress is estimated by watching extracted/interpolated frame counts inside the processing folder. It is best for trimmed highlight clips.",
             "#ff66d8",
         )
 
@@ -299,9 +299,11 @@ class GHXReplayToolkit(ctk.CTk):
         ctk.CTkLabel(panel, text=title, font=ctk.CTkFont(size=15, weight="bold"), text_color=color).grid(
             row=0, column=0, sticky="w", padx=16, pady=(14, 2)
         )
+
         ctk.CTkLabel(panel, text=path, font=ctk.CTkFont(size=12, weight="bold"), text_color="#ffffff").grid(
             row=1, column=0, sticky="w", padx=16, pady=(2, 4)
         )
+
         ctk.CTkLabel(
             panel,
             text=body,
@@ -319,9 +321,10 @@ class GHXReplayToolkit(ctk.CTk):
         ctk.CTkLabel(actions, text="Actions", font=ctk.CTkFont(size=17, weight="bold"), text_color="#ffffff").grid(
             row=0, column=0, columnspan=6, sticky="w", padx=16, pady=(14, 2)
         )
+
         ctk.CTkLabel(
             actions,
-            text="Only one job runs at a time. Use Stop to cancel the active backend process; rerun later to continue from the queue.",
+            text="Only one job runs at a time. Stop cancels the active backend process; rerun later to continue safely from the queue.",
             font=ctk.CTkFont(size=12),
             text_color="#8f9db0",
         ).grid(row=1, column=0, columnspan=6, sticky="w", padx=16, pady=(0, 10))
@@ -329,9 +332,9 @@ class GHXReplayToolkit(ctk.CTk):
         self._action_button(actions, 0, "Normal CPU", "Best quality/size\nSlower x265 encode", lambda: self.run_compression("Normal-CPU", "CurrentProfile"), "#1f6fb2", "#2e86d1")
         self._action_button(actions, 1, "Normal NVENC", "Fast H.265\nGood daily option", lambda: self.run_compression("Normal-NVENC", "CurrentProfile"), "#1f6fb2", "#2e86d1")
         self._action_button(actions, 2, "Aggressive NVENC", "Smaller files\nMore quality loss", lambda: self.run_compression("Aggressive-NVENC", "CurrentProfile"), "#1f6fb2", "#2e86d1")
-        self._action_button(actions, 3, "Run All", "Side-by-side test\nComplete after all", self.run_all_compression, "#0f91a8", "#12aeca")
+        self._action_button(actions, 3, "Run All", "Side-by-side test\nArchive after all", self.run_all_compression, "#0f91a8", "#12aeca")
         self._action_button(actions, 4, "RIFE 120FPS", "Smooth highlights\nShort clips only", self.run_rife, "#913ecf", "#a855f7")
-        self.stop_button = self._action_button(actions, 5, "Stop", "Cancel active job\nUse with care", self.stop_current_job, "#8a1f2d", "#b3263a")
+        self.stop_button = self._action_button(actions, 5, "Stop", "Cancel active job\nSource remains safe", self.stop_current_job, "#8a1f2d", "#b3263a")
         self.stop_button.configure(state="disabled")
 
     def _action_button(self, parent: ctk.CTkFrame, column: int, title: str, desc: str, command: Callable[[], None], color: str, hover: str) -> ctk.CTkButton:
@@ -347,9 +350,35 @@ class GHXReplayToolkit(ctk.CTk):
         )
         return btn
 
+    def _build_progress_panel(self) -> None:
+        progress_frame = ctk.CTkFrame(self.main, fg_color="#101927", corner_radius=18)
+        progress_frame.grid(row=4, column=0, sticky="ew", padx=28, pady=(0, 14))
+        progress_frame.grid_columnconfigure(0, weight=1)
+        progress_frame.grid_columnconfigure(1, weight=0)
+
+        ctk.CTkLabel(progress_frame, text="Job Progress", font=ctk.CTkFont(size=17, weight="bold"), text_color="#ffffff").grid(
+            row=0, column=0, sticky="w", padx=16, pady=(14, 4)
+        )
+
+        self.progress_status = ctk.CTkLabel(progress_frame, text="No active job", font=ctk.CTkFont(size=12), text_color="#8f9db0")
+        self.progress_status.grid(row=1, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 8))
+
+        self.progress_bar = ctk.CTkProgressBar(progress_frame, height=14, progress_color="#00e5ff")
+        self.progress_bar.grid(row=2, column=0, sticky="ew", padx=(16, 10), pady=(0, 14))
+        self.progress_bar.set(0)
+
+        self.progress_percent = ctk.CTkLabel(
+            progress_frame,
+            text="0%",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#00e5ff",
+            width=52,
+        )
+        self.progress_percent.grid(row=2, column=1, sticky="e", padx=(0, 16), pady=(0, 14))
+
     def _build_log_panel(self) -> None:
         log_frame = ctk.CTkFrame(self.main, fg_color="#101927", corner_radius=18)
-        log_frame.grid(row=4, column=0, sticky="nsew", padx=28, pady=(0, 24))
+        log_frame.grid(row=5, column=0, sticky="nsew", padx=28, pady=(0, 24))
         log_frame.grid_columnconfigure(0, weight=1)
         log_frame.grid_rowconfigure(1, weight=1)
 
@@ -362,12 +391,9 @@ class GHXReplayToolkit(ctk.CTk):
         )
 
         self.verbose_var = ctk.BooleanVar(value=False)
-        ctk.CTkSwitch(
-            log_header,
-            text="Verbose",
-            variable=self.verbose_var,
-            progress_color="#00e5ff",
-        ).grid(row=0, column=1, padx=(0, 12), sticky="e")
+        ctk.CTkSwitch(log_header, text="Verbose", variable=self.verbose_var, progress_color="#00e5ff").grid(
+            row=0, column=1, padx=(0, 12), sticky="e"
+        )
 
         ctk.CTkButton(
             log_header,
@@ -394,13 +420,14 @@ class GHXReplayToolkit(ctk.CTk):
     # -------------------------
 
     def run_installer(self) -> None:
-        self.run_script("Install / Check Tools", self.install_script, [])
+        self.run_script("Install / Check Tools", self.install_script, [], job_type="installer")
 
     def run_compression(self, profile: str, completion_mode: str) -> None:
         self.run_script(
             f"Compression: {profile}",
             self.core_script,
             ["-Profile", profile, "-CompletionMode", completion_mode],
+            job_type="compression",
         )
 
     def run_all_compression(self) -> None:
@@ -421,21 +448,32 @@ class GHXReplayToolkit(ctk.CTk):
                     break
             self.output_queue.put("__JOB_DONE__")
 
-        self._start_worker(worker, "Run All Compression")
+        self._start_worker(worker, "Run All Compression", job_type="compression")
 
     def run_rife(self) -> None:
-        self.run_script("RIFE 120FPS Enhancement", self.rife_script, [])
+        self.run_script("RIFE 120FPS Enhancement", self.rife_script, [], job_type="rife")
 
     def stop_current_job(self) -> None:
         self.stop_requested = True
-        self.output_queue.put("Stop requested. Attempting to terminate active process...\n")
+        self.output_queue.put("Stop requested. Attempting to terminate active process tree...\n")
+        self.set_progress(0, "Stop requested. Waiting for backend to terminate...")
+
         if self.current_process and self.current_process.poll() is None:
             try:
-                self.current_process.terminate()
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/PID", str(self.current_process.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                else:
+                    self.current_process.terminate()
             except Exception as exc:  # noqa: BLE001
                 self.output_queue.put(f"Could not terminate process cleanly: {exc}\n")
 
-    def run_script(self, name: str, script: Path, args: list[str]) -> None:
+    def run_script(self, name: str, script: Path, args: list[str], job_type: str) -> None:
         if self.is_running:
             self.log("A job is already running.\n")
             return
@@ -444,16 +482,18 @@ class GHXReplayToolkit(ctk.CTk):
             self._run_process(name, script, args)
             self.output_queue.put("__JOB_DONE__")
 
-        self._start_worker(worker, name)
+        self._start_worker(worker, name, job_type=job_type)
 
-    def _start_worker(self, target: Callable[[], None], name: str) -> None:
+    def _start_worker(self, target: Callable[[], None], name: str, job_type: str) -> None:
         self.stop_requested = False
         self.is_running = True
+        self.current_job_type = job_type
         self.status_label.configure(text=f"Running: {name}")
         self.status_pill.configure(text="RUNNING", fg_color="#ffd166", text_color="#1a1200")
         self.running_badge.configure(text="JOB RUNNING", text_color="#ffd166")
         self._set_buttons_state("disabled")
         self.stop_button.configure(state="normal")
+        self.set_progress(1, f"Starting: {name}")
         self.log(f"\n=== {name} ===\n")
         thread = threading.Thread(target=target, daemon=True)
         thread.start()
@@ -470,6 +510,8 @@ class GHXReplayToolkit(ctk.CTk):
         if self.verbose_var.get():
             self.output_queue.put(f"Command: {' '.join(command)}\n\n")
 
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
         try:
             self.current_process = subprocess.Popen(
                 command,
@@ -480,6 +522,7 @@ class GHXReplayToolkit(ctk.CTk):
                 errors="replace",
                 cwd=str(self.base_path),
                 bufsize=1,
+                creationflags=creation_flags,
             )
 
             assert self.current_process.stdout is not None
@@ -505,6 +548,7 @@ class GHXReplayToolkit(ctk.CTk):
             path.mkdir(parents=True, exist_ok=True)
 
     def _get_powershell_exe(self) -> str:
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         for exe in ("pwsh", "powershell"):
             try:
                 subprocess.run(
@@ -512,6 +556,7 @@ class GHXReplayToolkit(ctk.CTk):
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     check=False,
+                    creationflags=creation_flags,
                 )
                 return exe
             except FileNotFoundError:
@@ -551,6 +596,107 @@ class GHXReplayToolkit(ctk.CTk):
     def clear_log(self) -> None:
         self.log_box.delete("1.0", "end")
 
+    def set_progress(self, percent: float, status: str) -> None:
+        percent = max(0, min(100, percent))
+        self.progress_bar.set(percent / 100)
+        self.progress_percent.configure(text=f"{percent:.0f}%")
+        self.progress_status.configure(text=status)
+
+    def reset_progress(self) -> None:
+        self.progress_bar.set(0)
+        self.progress_percent.configure(text="0%")
+        self.progress_status.configure(text="No active job")
+
+    def complete_progress(self) -> None:
+        self.progress_bar.set(1)
+        self.progress_percent.configure(text="100%")
+        self.progress_status.configure(text="Job complete")
+
+    def _handle_progress_from_line(self, line: str) -> None:
+        hb_match = re.search(r"Encoding:.*?([0-9]+(?:\.[0-9]+)?)\s*%", line)
+        if hb_match:
+            percent = float(hb_match.group(1))
+            self.set_progress(percent, f"Encoding current clip: {percent:.1f}%")
+            return
+
+        batch_match = re.search(r"\[(\d+)/(\d+)\]\s+Encoding:\s+(.+)", line)
+        if batch_match:
+            current = int(batch_match.group(1))
+            total = int(batch_match.group(2))
+            file_name = batch_match.group(3).strip()
+            percent = (current / total) * 100 if total > 0 else 0
+            self.set_progress(percent, f"Batch {current}/{total}: {file_name}")
+            return
+
+        if "Extracting frames" in line:
+            self.set_progress(10, "RIFE: extracting source frames")
+            return
+
+        if "Running RIFE" in line or "Running RIFE interpolation" in line:
+            self.set_progress(35, "RIFE: interpolating frames")
+            return
+
+        if "Extracting audio" in line:
+            self.set_progress(75, "RIFE: extracting audio")
+            return
+
+        if "Rebuilding" in line:
+            self.set_progress(88, "RIFE: rebuilding final video")
+            return
+
+        if "RIFE complete" in line:
+            self.set_progress(100, "RIFE complete")
+            return
+
+        if "Complete." in line:
+            self.set_progress(100, "Compression complete")
+            return
+
+    def _auto_update_rife_progress(self) -> None:
+        if self.is_running and self.current_job_type == "rife":
+            self._update_rife_frame_progress()
+        self.after(1000, self._auto_update_rife_progress)
+
+    def _update_rife_frame_progress(self) -> None:
+        processing_root = self.paths["rife_processing"]
+        if not processing_root.exists():
+            return
+
+        work_dirs = [p for p in processing_root.iterdir() if p.is_dir()]
+        if not work_dirs:
+            return
+
+        latest = max(work_dirs, key=lambda p: p.stat().st_mtime)
+        frames_in = latest / "frames_in"
+        frames_out = latest / "frames_out"
+
+        input_count = self._count_image_files(frames_in)
+        output_count = self._count_image_files(frames_out)
+
+        if input_count <= 0 and output_count <= 0:
+            return
+
+        if output_count <= 0:
+            self.set_progress(10, f"RIFE: extracting frames ({input_count} source frames)")
+            return
+
+        expected_output = max(input_count * 2, 1)
+        interpolation_ratio = min(output_count / expected_output, 1.0)
+        percent = 35 + (interpolation_ratio * 40)
+        self.set_progress(
+            percent,
+            f"RIFE: interpolating frames ({output_count}/{expected_output} estimated output frames)",
+        )
+
+    def _count_image_files(self, path: Path) -> int:
+        if not path.exists():
+            return 0
+        count = 0
+        for file in path.iterdir():
+            if file.is_file() and file.suffix.lower() in IMAGE_EXTENSIONS:
+                count += 1
+        return count
+
     def _should_show_line(self, line: str) -> bool:
         if self.verbose_var.get():
             return True
@@ -560,6 +706,7 @@ class GHXReplayToolkit(ctk.CTk):
             "Running:",
             "Profile status",
             "Total clips",
+            "Total clips in input",
             "Already complete",
             "Still pending",
             "Encoding:",
@@ -583,14 +730,17 @@ class GHXReplayToolkit(ctk.CTk):
                 if message == "__JOB_DONE__":
                     self.is_running = False
                     self.stop_requested = False
+                    self.current_job_type = "idle"
                     self.status_label.configure(text="System idle")
                     self.status_pill.configure(text="READY", fg_color="#00e5ff", text_color="#001015")
                     self.running_badge.configure(text="SYSTEM READY", text_color="#00e5ff")
                     self._set_buttons_state("normal")
                     self.stop_button.configure(state="disabled")
                     self.refresh_counts(log_message=False)
+                    self.complete_progress()
                     self.log("Job finished.\n")
                 else:
+                    self._handle_progress_from_line(message)
                     if self._should_show_line(message):
                         self.log(message)
         except queue.Empty:
